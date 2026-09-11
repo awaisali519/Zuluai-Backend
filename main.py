@@ -12,6 +12,7 @@ app = FastAPI()
 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 
 # -----------------------------------
@@ -24,6 +25,15 @@ GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/"
     f"v1beta/models/{GEMINI_MODEL}:generateContent"
 )
+
+
+# -----------------------------------
+# Groq Model
+# -----------------------------------
+
+GROQ_MODEL = "qwen/qwen3.6-27b"
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 
 class ChatRequest(BaseModel):
@@ -117,7 +127,7 @@ def needs_web_search(message: str):
         "موسم",
         "ریٹ",
 
-        # Roman Urdu / Hinglish
+        # Roman Urdu
         "aaj",
         "abhi",
         "taza",
@@ -190,7 +200,8 @@ IDENTITY:
 - Always identify yourself as Zulu AI when asked your name.
 - Never say your name is Qwen.
 - Never claim that you are ChatGPT.
-- Gemini is the AI model powering Zulu AI.
+- Never identify yourself by the name of the underlying AI model.
+- Gemini or another AI model may power Zulu AI, but you are always Zulu AI.
 
 PERSONALITY:
 - Friendly and helpful.
@@ -259,8 +270,8 @@ def ask_gemini(user_message: str):
             timeout=60
         )
 
-        # Show Google's actual error message if Gemini fails
         if response.status_code != 200:
+
             return None, (
                 f"Gemini API error {response.status_code}: "
                 f"{response.text}"
@@ -294,6 +305,84 @@ def ask_gemini(user_message: str):
     except (KeyError, IndexError, TypeError, ValueError) as e:
 
         return None, f"Invalid Gemini response: {str(e)}"
+
+
+# -----------------------------------
+# Groq Qwen Backup Function
+# -----------------------------------
+
+def ask_groq(user_message: str):
+
+    if not GROQ_API_KEY:
+
+        return None, "GROQ_API_KEY is not configured."
+
+    try:
+
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {GROQ_API_KEY}"
+        }
+
+        payload = {
+
+            "model": GROQ_MODEL,
+
+            "messages": [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": user_message
+                }
+            ],
+
+            "temperature": 0.3,
+
+            "max_tokens": 500
+        }
+
+        response = requests.post(
+            GROQ_URL,
+            headers=headers,
+            json=payload,
+            timeout=30
+        )
+
+        if response.status_code != 200:
+
+            return None, (
+                f"Groq API error {response.status_code}: "
+                f"{response.text}"
+            )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        choices = data.get("choices", [])
+
+        if not choices:
+            return None, "Groq returned no response."
+
+        message = choices[0].get("message", {})
+
+        reply = message.get("content", "")
+
+        if not reply:
+            return None, "Groq returned an empty response."
+
+        return reply, None
+
+    except requests.exceptions.RequestException as e:
+
+        return None, f"Groq connection error: {str(e)}"
+
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+
+        return None, f"Invalid Groq response: {str(e)}"
 
 
 # -----------------------------------
@@ -331,30 +420,44 @@ def chat(request: ChatRequest):
         user_content += web_context
 
     # -----------------------------------
-    # Ask Gemini
+    # PRIMARY AI — Gemini
     # -----------------------------------
 
-    reply, error = ask_gemini(user_content)
+    reply, gemini_error = ask_gemini(user_content)
 
-    # -----------------------------------
-    # Gemini Error
-    # -----------------------------------
-
-    if error:
+    if reply:
 
         return {
-            "reply": "Sorry, Zulu AI could not connect to Gemini right now.",
+            "reply": reply,
             "web_search_used": web_search_used,
-            "error": error
+            "ai_provider": "gemini"
         }
 
     # -----------------------------------
-    # Successful Response
+    # BACKUP AI — Groq Qwen
+    # -----------------------------------
+
+    backup_reply, groq_error = ask_groq(user_content)
+
+    if backup_reply:
+
+        return {
+            "reply": backup_reply,
+            "web_search_used": web_search_used,
+            "ai_provider": "groq-qwen"
+        }
+
+    # -----------------------------------
+    # Both AI Providers Failed
     # -----------------------------------
 
     return {
-        "reply": reply,
-        "web_search_used": web_search_used
+        "reply": "Sorry, Zulu AI could not connect to its AI services right now.",
+        "web_search_used": web_search_used,
+        "error": {
+            "gemini": gemini_error,
+            "groq": groq_error
+        }
     }
 
 
