@@ -16,7 +16,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 
 # Temporary backup test
-FORCE_GROQ_TEST = True
+FORCE_GROQ_TEST = False
 
 
 # -----------------------------------
