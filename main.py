@@ -259,6 +259,13 @@ def ask_gemini(user_message: str):
             timeout=60
         )
 
+        # Show Google's actual error message if Gemini fails
+        if response.status_code != 200:
+            return None, (
+                f"Gemini API error {response.status_code}: "
+                f"{response.text}"
+            )
+
         response.raise_for_status()
 
         data = response.json()
