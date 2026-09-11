@@ -2,6 +2,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 import requests
 import os
+import re
 
 app = FastAPI()
 
@@ -375,6 +376,17 @@ def ask_groq(user_message: str):
 
         if not reply:
             return None, "Groq returned an empty response."
+
+        # Remove Qwen reasoning/thinking section
+        reply = re.sub(
+            r"<think>.*?</think>",
+            "",
+            reply,
+            flags=re.DOTALL
+        ).strip()
+
+        if not reply:
+            return None, "Groq returned an empty response after cleanup."
 
         return reply, None
 
