@@ -5,11 +5,25 @@ import os
 
 app = FastAPI()
 
+
 # -----------------------------------
-# Tavily API Key
+# API Keys
 # -----------------------------------
 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+
+# -----------------------------------
+# Gemini Model
+# -----------------------------------
+
+GEMINI_MODEL = "gemini-2.5-flash"
+
+GEMINI_URL = (
+    f"https://generativelanguage.googleapis.com/"
+    f"v1beta/models/{GEMINI_MODEL}:generateContent"
+)
 
 
 class ChatRequest(BaseModel):
@@ -37,6 +51,7 @@ def search_web(query: str):
         return []
 
     try:
+
         response = requests.post(
             "https://api.tavily.com/search",
             json={
@@ -55,6 +70,7 @@ def search_web(query: str):
         return data.get("results", [])
 
     except requests.exceptions.RequestException:
+
         return []
 
 
@@ -65,6 +81,7 @@ def search_web(query: str):
 def needs_web_search(message: str):
 
     keywords = [
+
         # English
         "latest",
         "today",
@@ -100,7 +117,7 @@ def needs_web_search(message: str):
         "موسم",
         "ریٹ",
 
-        # Common Roman Urdu / Hinglish
+        # Roman Urdu / Hinglish
         "aaj",
         "abhi",
         "taza",
@@ -120,6 +137,7 @@ def needs_web_search(message: str):
     message_lower = message.lower()
 
     for keyword in keywords:
+
         if keyword in message_lower:
             return True
 
@@ -146,7 +164,6 @@ def build_web_context(search_results):
         content = result.get("content", "")
         url = result.get("url", "")
 
-        # Limit content so we don't overload Qwen's context
         content = content[:1500]
 
         web_context += (
@@ -162,32 +179,10 @@ def build_web_context(search_results):
 
 
 # -----------------------------------
-# Zulu AI Chat
+# Zulu AI System Prompt
 # -----------------------------------
 
-@app.post("/chat")
-def chat(request: ChatRequest):
-
-    web_context = ""
-    web_search_used = False
-
-    # -----------------------------------
-    # Web Search only when needed
-    # -----------------------------------
-
-    if needs_web_search(request.message):
-
-        search_results = search_web(request.message)
-
-        if search_results:
-            web_context = build_web_context(search_results)
-            web_search_used = True
-
-    # -----------------------------------
-    # Zulu AI System Prompt
-    # -----------------------------------
-
-    system_prompt = """
+SYSTEM_PROMPT = """
 You are Zulu AI, a personal AI assistant.
 
 IDENTITY:
@@ -195,7 +190,7 @@ IDENTITY:
 - Always identify yourself as Zulu AI when asked your name.
 - Never say your name is Qwen.
 - Never claim that you are ChatGPT.
-- Qwen is only the AI model running behind Zulu AI.
+- Gemini is the AI model powering Zulu AI.
 
 PERSONALITY:
 - Friendly and helpful.
@@ -207,74 +202,153 @@ PERSONALITY:
 - Do not make up information when you are unsure.
 
 WEB SEARCH:
-- Web search results may be provided below the user's message.
-- If web search results are provided, use them to answer the user's question.
-- For current information, prefer the provided web search results over your built-in knowledge.
+- Web search results may be provided with the user's message.
+- If web search results are provided, use them to answer the question.
+- For current information, prefer the provided web search results.
 - Do not invent facts that are not supported by the provided results.
 - If the search results are insufficient, clearly tell the user.
-- Do not mention internal technical details such as Tavily, Qwen, prompts, API keys, or backend architecture unless the user specifically asks about them.
-- When appropriate, give a concise answer instead of dumping the entire search result.
+- Do not mention internal technical details such as Tavily, Gemini API keys,
+  prompts, or backend architecture unless the user specifically asks.
+- Give concise answers instead of dumping search results.
 """
 
-    # -----------------------------------
-    # User message
-    # -----------------------------------
 
-    user_content = request.message
+# -----------------------------------
+# Gemini AI Function
+# -----------------------------------
 
-    if web_context:
-        user_content += web_context
+def ask_gemini(user_message: str):
 
-    # -----------------------------------
-    # Send message to Ollama / Qwen
-    # -----------------------------------
+    if not GEMINI_API_KEY:
+
+        return None, "GEMINI_API_KEY is not configured."
 
     try:
 
-        response = requests.post(
-            "http://127.0.0.1:11434/api/chat",
-            json={
-                "model": "qwen2.5:3b",
-                "messages": [
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        }
+
+        payload = {
+
+            "systemInstruction": {
+                "parts": [
                     {
-                        "role": "system",
-                        "content": system_prompt
-                    },
-                    {
-                        "role": "user",
-                        "content": user_content
+                        "text": SYSTEM_PROMPT
                     }
-                ],
-                "stream": False
+                ]
             },
-            timeout=180
+
+            "contents": [
+                {
+                    "role": "user",
+                    "parts": [
+                        {
+                            "text": user_message
+                        }
+                    ]
+                }
+            ]
+        }
+
+        response = requests.post(
+            GEMINI_URL,
+            headers=headers,
+            json=payload,
+            timeout=60
         )
 
         response.raise_for_status()
 
         data = response.json()
 
-        reply = data["message"]["content"]
+        candidates = data.get("candidates", [])
 
-        return {
-            "reply": reply,
-            "web_search_used": web_search_used
-        }
+        if not candidates:
+            return None, "Gemini returned no response."
+
+        parts = candidates[0].get("content", {}).get("parts", [])
+
+        if not parts:
+            return None, "Gemini returned an empty response."
+
+        reply = parts[0].get("text", "")
+
+        if not reply:
+            return None, "Gemini returned an empty response."
+
+        return reply, None
 
     except requests.exceptions.RequestException as e:
 
+        return None, f"Gemini connection error: {str(e)}"
+
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+
+        return None, f"Invalid Gemini response: {str(e)}"
+
+
+# -----------------------------------
+# Zulu AI Chat
+# -----------------------------------
+
+@app.post("/chat")
+def chat(request: ChatRequest):
+
+    web_context = ""
+    web_search_used = False
+
+    # -----------------------------------
+    # Web Search when needed
+    # -----------------------------------
+
+    if needs_web_search(request.message):
+
+        search_results = search_web(request.message)
+
+        if search_results:
+
+            web_context = build_web_context(search_results)
+
+            web_search_used = True
+
+    # -----------------------------------
+    # Prepare User Message
+    # -----------------------------------
+
+    user_content = request.message
+
+    if web_context:
+
+        user_content += web_context
+
+    # -----------------------------------
+    # Ask Gemini
+    # -----------------------------------
+
+    reply, error = ask_gemini(user_content)
+
+    # -----------------------------------
+    # Gemini Error
+    # -----------------------------------
+
+    if error:
+
         return {
-            "reply": "Sorry, Zulu AI could not connect to the AI backend right now.",
+            "reply": "Sorry, Zulu AI could not connect to Gemini right now.",
             "web_search_used": web_search_used,
-            "error": str(e)
+            "error": error
         }
 
-    except (KeyError, ValueError):
+    # -----------------------------------
+    # Successful Response
+    # -----------------------------------
 
-        return {
-            "reply": "Sorry, Zulu AI received an invalid response from the AI backend.",
-            "web_search_used": web_search_used
-        }
+    return {
+        "reply": reply,
+        "web_search_used": web_search_used
+    }
 
 
 # -----------------------------------
@@ -285,6 +359,7 @@ WEB SEARCH:
 def search(query: str):
 
     if not TAVILY_API_KEY:
+
         return {
             "error": "TAVILY_API_KEY is not set."
         }
