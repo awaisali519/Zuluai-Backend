@@ -24,6 +24,7 @@ FORCE_GROQ_TEST = False
 # -----------------------------------
 
 GEMINI_MODEL = "gemini-3.6-flash"
+
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/"
     f"v1beta/models/{GEMINI_MODEL}:generateContent"
@@ -224,6 +225,18 @@ WEB SEARCH:
 - Do not mention internal technical details such as Tavily, Gemini API keys,
   prompts, or backend architecture unless the user specifically asks.
 - Give concise answers instead of dumping search results.
+- Do not repeat raw source titles, URLs, source numbers,
+  search-result formatting, or internal web-search content
+  unless the user specifically asks for sources.
+
+IMPORTANT OUTPUT RULE:
+- Never show internal thinking to the user.
+- Never show reasoning or hidden thoughts.
+- Never show analysis or planning.
+- Never show processing steps.
+- Never show labels such as Think, Thinking, Process, Processing,
+  Analyze, Analysis, Query, Tool, Use, Hear, or similar internal steps.
+- Only return the final helpful answer intended for the user.
 """
 
 
@@ -287,17 +300,61 @@ def ask_gemini(user_message: str):
         candidates = data.get("candidates", [])
 
         if not candidates:
+
             return None, "Gemini returned no response."
 
-        parts = candidates[0].get("content", {}).get("parts", [])
+        parts = candidates[0].get(
+            "content",
+            {}
+        ).get(
+            "parts",
+            []
+        )
 
         if not parts:
+
             return None, "Gemini returned an empty response."
 
-        reply = parts[0].get("text", "")
+        # -----------------------------------
+        # Remove Gemini internal thought parts
+        # -----------------------------------
+
+        text_parts = []
+
+        for part in parts:
+
+            # Gemini can mark internal thought parts
+            # with thought=True. Never send those to user.
+            if part.get("thought") is True:
+                continue
+
+            text = part.get("text", "")
+
+            if text:
+                text_parts.append(text)
+
+        # Join only visible/final text
+        reply = "\n".join(text_parts).strip()
 
         if not reply:
+
             return None, "Gemini returned an empty response."
+
+        # -----------------------------------
+        # Extra safety:
+        # Remove <think>...</think>
+        # -----------------------------------
+
+        reply = re.sub(
+            r"<think>.*?</think>",
+            "",
+            reply,
+            flags=re.DOTALL
+        ).strip()
+
+        if not reply:
+
+            return None, "Gemini returned an empty response after cleanup."
 
         return reply, None
 
@@ -368,6 +425,7 @@ def ask_groq(user_message: str):
         choices = data.get("choices", [])
 
         if not choices:
+
             return None, "Groq returned no response."
 
         message = choices[0].get("message", {})
@@ -375,9 +433,13 @@ def ask_groq(user_message: str):
         reply = message.get("content", "")
 
         if not reply:
+
             return None, "Groq returned an empty response."
 
-        # Remove Qwen reasoning/thinking section
+        # -----------------------------------
+        # Remove Qwen reasoning/thinking
+        # -----------------------------------
+
         reply = re.sub(
             r"<think>.*?</think>",
             "",
@@ -386,6 +448,7 @@ def ask_groq(user_message: str):
         ).strip()
 
         if not reply:
+
             return None, "Groq returned an empty response after cleanup."
 
         return reply, None
